@@ -177,6 +177,18 @@ button {
 .conn-item:hover .conn-edit {
   visibility: visible;
 }
+.conn-star {
+  visibility: hidden;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.conn-item:hover .conn-star,
+.conn-star.active {
+  visibility: visible;
+}
+.conn-star.active {
+  color: var(--yellow, #e0af02);
+}
 
 .tree-schema {
   padding: 5px 12px;

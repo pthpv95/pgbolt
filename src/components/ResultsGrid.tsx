@@ -318,9 +318,12 @@ export function ResultsGrid({
                           className="cell-input"
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={() => commitEdit(editValue)}
+                          onBlur={() => setEditingCell(null)}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") commitEdit(editValue);
+                            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                              e.preventDefault();
+                              commitEdit(editValue);
+                            } else if (e.key === "Enter") commitEdit(editValue);
                             else if (e.key === "Escape") setEditingCell(null);
                           }}
                         />

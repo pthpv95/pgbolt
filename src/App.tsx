@@ -175,6 +175,10 @@ export default function App() {
           e.preventDefault();
           setAddFilterOpen((o) => !o);
         }
+      } else if (e.key.toLowerCase() === "r") {
+        // ⌘R: re-run the active tab's query to refresh the results grid.
+        e.preventDefault();
+        if (activeTabId) runTab(activeTabId);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -242,6 +246,10 @@ export default function App() {
     setModalOpen(false);
     setEditingConn(null);
     activateConnection(conn.id);
+  }
+
+  function toggleFavorite(id: string) {
+    setConnections((prev) => prev.map((c) => (c.id === id ? { ...c, favorite: !c.favorite } : c)));
   }
 
   async function deleteConnection(id: string) {
@@ -520,6 +528,7 @@ export default function App() {
             setEditingConn(conn);
             setModalOpen(true);
           }}
+          onToggleFavorite={toggleFavorite}
           onPickTable={openTable}
         />
 

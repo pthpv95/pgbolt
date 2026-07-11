@@ -9,10 +9,20 @@ interface Props {
   onSelect: (conn: SavedConnection) => void;
   onAdd: () => void;
   onEdit: (conn: SavedConnection) => void;
+  onToggleFavorite: (id: string) => void;
   onPickTable: (schema: string, table: string) => void;
 }
 
-export function Sidebar({ connections, activeId, connError, onSelect, onAdd, onEdit, onPickTable }: Props) {
+export function Sidebar({
+  connections,
+  activeId,
+  connError,
+  onSelect,
+  onAdd,
+  onEdit,
+  onToggleFavorite,
+  onPickTable,
+}: Props) {
   const [schemas, setSchemas] = useState<string[]>([]);
   const [open, setOpen] = useState<Record<string, TableInfo[] | undefined>>({});
   const [search, setSearch] = useState("");
@@ -70,6 +80,11 @@ export function Sidebar({ connections, activeId, connError, onSelect, onAdd, onE
     setOpen((o) => ({ ...o, [schema]: tables }));
   }
 
+  // Favorites bubble to the top; otherwise preserve saved order.
+  const sortedConnections = [...connections].sort(
+    (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0)
+  );
+
   return (
     <aside className="sidebar">
       <div className="sidebar-section">
@@ -80,7 +95,7 @@ export function Sidebar({ connections, activeId, connError, onSelect, onAdd, onE
       </div>
 
       <div className="sidebar-scroll">
-        {connections.map((c) => (
+        {sortedConnections.map((c) => (
           <div
             key={c.id}
             className={`conn-item ${c.id === activeId ? "active" : ""}`}
@@ -88,6 +103,16 @@ export function Sidebar({ connections, activeId, connError, onSelect, onAdd, onE
           >
             <span className="conn-dot" />
             <span className="conn-name">{c.name}</span>
+            <button
+              className={`icon-btn conn-star ${c.favorite ? "active" : ""}`}
+              title={c.favorite ? "Unfavorite" : "Favorite"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFavorite(c.id);
+              }}
+            >
+              {c.favorite ? "★" : "☆"}
+            </button>
             <button
               className="icon-btn conn-edit"
               title="Edit connection"

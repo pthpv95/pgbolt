@@ -128,7 +128,10 @@ export function RowDetailPanel({
                       value={editValue}
                       onChange={(e) => setEditValue(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                          e.preventDefault();
+                          commitEdit(editValue);
+                        } else if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           commitEdit(editValue);
                         } else if (e.key === "Escape") {
@@ -136,7 +139,7 @@ export function RowDetailPanel({
                           setEditingCol(null);
                         }
                       }}
-                      onBlur={() => commitEdit(editValue)}
+                      onBlur={() => setEditingCol(null)}
                     />
                     <button
                       className="cell-null-btn"

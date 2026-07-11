@@ -10,6 +10,7 @@ export interface ConnectionConfig {
 export interface SavedConnection extends ConnectionConfig {
   id: string;
   name: string;
+  favorite?: boolean;
 }
 
 export interface ColumnInfo {
