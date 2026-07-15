@@ -1,8 +1,11 @@
 # pgbolt
 
-A fast, native Postgres GUI for macOS — a TablePlus-shaped starting point built on
+A ligtning fast, native Postgres GUI for macOS — a TablePlus-shaped starting point built on
 Tauri (Rust) + React/TypeScript. Rust owns the connection pools and query
 execution; the webview is only the UI.
+
+
+<img width="721" height="410" alt="image" src="https://github.com/user-attachments/assets/4537640a-010a-458e-8ab3-17807662c94b" />
 
 ## Why this stack
 
