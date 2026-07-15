@@ -14,6 +14,7 @@ pub fn run() {
             db::connect,
             db::disconnect,
             db::run_query,
+            db::cancel_query,
             db::list_schemas,
             db::list_tables,
             db::search_tables,

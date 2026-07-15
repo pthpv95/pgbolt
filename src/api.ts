@@ -8,8 +8,11 @@ export const api = {
   disconnect(connId: string) {
     return invoke<void>("disconnect", { connId });
   },
-  runQuery(connId: string, sql: string) {
-    return invoke<QueryResult>("run_query", { connId, sql });
+  runQuery(connId: string, sql: string, queryId: string) {
+    return invoke<QueryResult>("run_query", { connId, sql, queryId });
+  },
+  cancelQuery(connId: string, queryId: string) {
+    return invoke<boolean>("cancel_query", { connId, queryId });
   },
   listSchemas(connId: string) {
     return invoke<string[]>("list_schemas", { connId });

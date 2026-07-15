@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { SqlEditor } from "./components/SqlEditor";
 import { ResultsGrid } from "./components/ResultsGrid";
@@ -33,6 +33,8 @@ function blankTab(connId: string): QueryTab {
     result: null,
     error: null,
     running: false,
+    cancelling: false,
+    queryId: null,
     tableRef: null,
     pkColumns: null,
     filters: [],
@@ -117,6 +119,7 @@ export default function App() {
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
+  const cancelledQueryIds = useRef(new Set<string>());
   // schema→table→columns per connection, seeded once for editor autocomplete.
   const [schemaMaps, setSchemaMaps] = useState<Record<string, SchemaMap>>({});
 
@@ -265,35 +268,66 @@ export default function App() {
   }
 
   async function executeTab(tab: QueryTab, sql: string) {
-    patchTab(tab.id, { running: true, error: null });
+    const queryId = crypto.randomUUID();
+    patchTab(tab.id, { running: true, cancelling: false, queryId, error: null });
     try {
-      const res = await api.runQuery(tab.connId, sql);
-      patchTab(tab.id, { result: res, running: false });
+      const res = await api.runQuery(tab.connId, sql, queryId);
+      cancelledQueryIds.current.delete(queryId);
+      patchTab(tab.id, {
+        result: res,
+        running: false,
+        cancelling: false,
+        queryId: null,
+        error: null,
+        tableRef: detectTableRef(sql),
+        pkColumns: null,
+      });
 
-      let ref = tab.tableRef;
-      if (!ref) {
-        ref = detectTableRef(sql);
-        if (ref) patchTab(tab.id, { tableRef: ref });
-      }
+      const ref = detectTableRef(sql);
       if (ref) {
         const pk = await api.primaryKeys(tab.connId, ref.schema, ref.table).catch(() => []);
         patchTab(tab.id, { pkColumns: pk });
       }
     } catch (e) {
-      patchTab(tab.id, { error: String(e), result: null, running: false });
+      const cancelled = cancelledQueryIds.current.delete(queryId);
+      patchTab(tab.id, {
+        error: cancelled ? null : String(e),
+        ...(cancelled ? {} : { result: null }),
+        running: false,
+        cancelling: false,
+        queryId: null,
+      });
     }
   }
 
-  function runTab(tabId: string) {
+  async function cancelTab(tabId: string) {
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab?.running || !tab.queryId || tab.cancelling) return;
+    const queryId = tab.queryId;
+    cancelledQueryIds.current.add(queryId);
+    patchTab(tab.id, { cancelling: true });
+    try {
+      const accepted = await api.cancelQuery(tab.connId, queryId);
+      if (!accepted) {
+        cancelledQueryIds.current.delete(queryId);
+        patchTab(tab.id, { cancelling: false });
+      }
+    } catch (e) {
+      cancelledQueryIds.current.delete(queryId);
+      patchTab(tab.id, { cancelling: false, error: `Could not stop query: ${String(e)}` });
+    }
+  }
+
+  function runTab(tabId: string, selectedSql: string | null = null) {
     const tab = tabs.find((t) => t.id === tabId);
     if (!tab || tab.running) return;
-    executeTab(tab, tab.sql);
+    executeTab(tab, selectedSql?.trim() || tab.sql);
   }
 
   function setTabSql(id: string, sql: string) {
     // Hand-editing the query invalidates any filter chips — they only ever
     // represent SQL that the filter machinery itself produced.
-    patchTab(id, { sql, filters: [] });
+    patchTab(id, { sql, filters: [], tableRef: null, pkColumns: null });
   }
 
   function newTab() {
@@ -381,6 +415,8 @@ export default function App() {
       result: null,
       error: null,
       running: false,
+      cancelling: false,
+      queryId: null,
       tableRef: { schema, table },
       pkColumns: null,
       filters: [],
@@ -549,11 +585,15 @@ export default function App() {
           <div className="editor-wrap">
             <div className="editor-bar">
               <button
-                className="run-btn"
-                onClick={() => activeTabId && runTab(activeTabId)}
-                disabled={!activeTab || activeTab.running}
+                className={`run-btn ${activeTab?.running ? "stop" : ""}`}
+                onClick={() => {
+                  if (!activeTabId) return;
+                  if (activeTab?.running) cancelTab(activeTabId);
+                  else runTab(activeTabId);
+                }}
+                disabled={!activeTab || !!activeTab.cancelling}
               >
-                ⚡ Run
+                {activeTab?.cancelling ? "Stopping…" : activeTab?.running ? "■ Stop" : "⚡ Run"}
               </button>
               <span className="run-hint">⌘↵</span>
               {!editable && activeTab?.tableRef && activeTab.pkColumns?.length === 0 && (
@@ -566,9 +606,14 @@ export default function App() {
                   <>
                     <span className="rows">
                       {activeTab.result.columns.length > 0
-                        ? `${activeTab.result.rows.length} rows`
+                        ? `${activeTab.result.rows.length}${activeTab.result.truncated ? "+" : ""} rows`
                         : `${activeTab.result.rows_affected} affected`}
                     </span>
+                    {activeTab.result.truncated && (
+                      <span className="limit-badge" title="Safety limit reached; the query was stopped.">
+                        limited
+                      </span>
+                    )}
                     <span className="ms">{activeTab.result.duration_ms} ms</span>
                   </>
                 )}
@@ -577,7 +622,7 @@ export default function App() {
             <SqlEditor
               value={activeTab?.sql ?? ""}
               onChange={(v) => activeTab && setTabSql(activeTab.id, v)}
-              onRun={() => activeTabId && runTab(activeTabId)}
+              onRun={(selectedSql) => activeTabId && runTab(activeTabId, selectedSql)}
               disabled={!activeTab || activeTab.running}
               schema={activeId ? schemaMaps[activeId] : undefined}
               height={editorHeight}

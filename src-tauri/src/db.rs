@@ -5,11 +5,14 @@
 //! run their query without holding the lock.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
-use sqlx::{Column, Row, TypeInfo};
+use sqlx::pool::PoolConnection;
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgSslMode};
+use sqlx::{Column, Connection, Executor, Postgres, Row, TypeInfo};
 use tauri::State;
 use tokio::sync::RwLock;
 
@@ -17,8 +20,25 @@ use crate::convert::row_to_json;
 
 #[derive(Default)]
 pub struct AppState {
-    connections: RwLock<HashMap<String, PgPool>>,
+    connections: RwLock<HashMap<String, ConnectionEntry>>,
+    running_queries: Arc<RwLock<HashMap<String, RunningQuery>>>,
 }
+
+#[derive(Clone)]
+struct ConnectionEntry {
+    pool: PgPool,
+    options: PgConnectOptions,
+}
+
+#[derive(Clone)]
+struct RunningQuery {
+    conn_id: String,
+    backend_pid: Option<i32>,
+    cancel_requested: bool,
+}
+
+const MAX_RESULT_ROWS: usize = 5_000;
+const QUERY_CANCELLED: &str = "Query cancelled.";
 
 #[derive(Deserialize)]
 pub struct ConnectionConfig {
@@ -43,6 +63,7 @@ pub struct QueryResult {
     pub rows: Vec<serde_json::Value>,
     pub rows_affected: u64,
     pub duration_ms: u128,
+    pub truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -121,8 +142,121 @@ async fn pool_for(state: &State<'_, AppState>, conn_id: &str) -> Result<PgPool, 
         .read()
         .await
         .get(conn_id)
-        .cloned()
+        .map(|entry| entry.pool.clone())
         .ok_or_else(|| format!("No active connection: {conn_id}"))
+}
+
+async fn options_for(
+    state: &State<'_, AppState>,
+    conn_id: &str,
+) -> Result<PgConnectOptions, String> {
+    state
+        .connections
+        .read()
+        .await
+        .get(conn_id)
+        .map(|entry| entry.options.clone())
+        .ok_or_else(|| format!("No active connection: {conn_id}"))
+}
+
+async fn execute_sql(
+    mut conn: PoolConnection<Postgres>,
+    sql: String,
+    start: Instant,
+) -> (Result<QueryResult, String>, PoolConnection<Postgres>) {
+    // Decide row-returning vs. command by leading keyword. Good enough for an
+    // MVP editor; a fuller version would parse or use describe().
+    let head = sql.trim_start().to_ascii_lowercase();
+    let returns_rows = ["select", "with", "show", "explain", "values", "table"]
+        .iter()
+        .any(|k| head.starts_with(k));
+
+    let result = async {
+        if returns_rows {
+            let mut rows = Vec::with_capacity(MAX_RESULT_ROWS + 1);
+            let mut prepared_error = None;
+            {
+                let mut stream = (&mut *conn).fetch(sqlx::query(&sql));
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(row) => {
+                            rows.push(row);
+                            if rows.len() > MAX_RESULT_ROWS {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            prepared_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(error) = prepared_error {
+                if !is_multiple_statements_error(&error) {
+                    return Err(error.to_string());
+                }
+                rows.clear();
+                let mut stream = (&mut *conn).fetch(sqlx::raw_sql(&sql));
+                while let Some(item) = stream.next().await {
+                    rows.push(item.map_err(|e| e.to_string())?);
+                    if rows.len() > MAX_RESULT_ROWS {
+                        break;
+                    }
+                }
+            }
+
+            let truncated = rows.len() > MAX_RESULT_ROWS;
+            if truncated {
+                rows.truncate(MAX_RESULT_ROWS);
+                // The result cap intentionally stops reading the server stream.
+                // Close this worker connection instead of returning unread data to
+                // the pool; Postgres will stop the query and roll back if needed.
+                conn.close_on_drop();
+            }
+
+            let columns = rows
+                .first()
+                .map(|r| {
+                    r.columns()
+                        .iter()
+                        .map(|c| ColumnInfo {
+                            name: c.name().to_string(),
+                            data_type: c.type_info().name().to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(QueryResult {
+                columns,
+                rows: rows.iter().map(row_to_json).collect(),
+                rows_affected: 0,
+                duration_ms: start.elapsed().as_millis(),
+                truncated,
+            })
+        } else {
+            let res = match (&mut *conn).execute(sqlx::query(&sql)).await {
+                Ok(result) => result,
+                Err(error) if is_multiple_statements_error(&error) => (&mut *conn)
+                    .execute(sqlx::raw_sql(&sql))
+                    .await
+                    .map_err(|e| e.to_string())?,
+                Err(error) => return Err(error.to_string()),
+            };
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                rows_affected: res.rows_affected(),
+                duration_ms: start.elapsed().as_millis(),
+                truncated: false,
+            })
+        }
+    }
+    .await;
+
+    (result, conn)
 }
 
 #[tauri::command]
@@ -146,7 +280,7 @@ pub async fn connect(
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(10))
-        .connect_with(opts)
+        .connect_with(opts.clone())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -156,14 +290,20 @@ pub async fn connect(
         .await
         .map_err(|e| e.to_string())?;
 
-    state.connections.write().await.insert(conn_id.clone(), pool);
+    state.connections.write().await.insert(
+        conn_id.clone(),
+        ConnectionEntry {
+            pool,
+            options: opts,
+        },
+    );
     Ok(conn_id)
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>, conn_id: String) -> Result<(), String> {
-    if let Some(pool) = state.connections.write().await.remove(&conn_id) {
-        pool.close().await;
+    if let Some(entry) = state.connections.write().await.remove(&conn_id) {
+        entry.pool.close().await;
     }
     Ok(())
 }
@@ -173,62 +313,102 @@ pub async fn run_query(
     state: State<'_, AppState>,
     conn_id: String,
     sql: String,
+    query_id: String,
 ) -> Result<QueryResult, String> {
     let pool = pool_for(&state, &conn_id).await?;
     let start = Instant::now();
+    let running_queries = state.running_queries.clone();
+    running_queries.write().await.insert(
+        query_id.clone(),
+        RunningQuery {
+            conn_id: conn_id.clone(),
+            backend_pid: None,
+            cancel_requested: false,
+        },
+    );
 
-    // Decide row-returning vs. command by leading keyword. Good enough for an
-    // MVP editor; a fuller version would parse or use describe().
-    let head = sql.trim_start().to_ascii_lowercase();
-    let returns_rows = ["select", "with", "show", "explain", "values", "table"]
-        .iter()
-        .any(|k| head.starts_with(k));
-
-    if returns_rows {
-        let rows = match sqlx::query(&sql).fetch_all(&pool).await {
-            Ok(rows) => rows,
-            Err(error) if is_multiple_statements_error(&error) => sqlx::raw_sql(&sql)
-                .fetch_all(&pool)
+    let worker_queries = running_queries.clone();
+    let worker_query_id = query_id.clone();
+    let result = tauri::async_runtime::spawn(async move {
+        let result = async {
+            let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+            let backend_pid: i32 = (&mut *conn)
+                .fetch_one(sqlx::query("SELECT pg_backend_pid()"))
                 .await
-                .map_err(|e| e.to_string())?,
-            Err(error) => return Err(error.to_string()),
-        };
+                .map_err(|e| e.to_string())?
+                .get(0);
 
-        let columns = rows
-            .first()
-            .map(|r| {
-                r.columns()
-                    .iter()
-                    .map(|c| ColumnInfo {
-                        name: c.name().to_string(),
-                        data_type: c.type_info().name().to_string(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            let cancel_requested = {
+                let mut running = worker_queries.write().await;
+                let query = running.get_mut(&worker_query_id).ok_or(QUERY_CANCELLED)?;
+                query.backend_pid = Some(backend_pid);
+                query.cancel_requested
+            };
+            if cancel_requested {
+                return Err(QUERY_CANCELLED.to_string());
+            }
 
-        Ok(QueryResult {
-            columns,
-            rows: rows.iter().map(row_to_json).collect(),
-            rows_affected: 0,
-            duration_ms: start.elapsed().as_millis(),
-        })
-    } else {
-        let res = match sqlx::query(&sql).execute(&pool).await {
-            Ok(result) => result,
-            Err(error) if is_multiple_statements_error(&error) => sqlx::raw_sql(&sql)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?,
-            Err(error) => return Err(error.to_string()),
+            let (result, conn) = execute_sql(conn, sql, start).await;
+            // Stop exposing this PID before its connection can return to the
+            // pool and be reused by another query.
+            worker_queries.write().await.remove(&worker_query_id);
+            drop(conn);
+            result
+        }
+        .await;
+
+        // Covers acquire/PID/setup failures. Normal execution already removed
+        // the entry before releasing its worker connection.
+        worker_queries.write().await.remove(&worker_query_id);
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    running_queries.write().await.remove(&query_id);
+    result
+}
+
+#[tauri::command]
+pub async fn cancel_query(
+    state: State<'_, AppState>,
+    conn_id: String,
+    query_id: String,
+) -> Result<bool, String> {
+    let running = {
+        let mut queries = state.running_queries.write().await;
+        let Some(query) = queries.get_mut(&query_id) else {
+            return Ok(false);
         };
-        Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: res.rows_affected(),
-            duration_ms: start.elapsed().as_millis(),
-        })
-    }
+        if query.conn_id != conn_id {
+            return Ok(false);
+        }
+        query.cancel_requested = true;
+        query.clone()
+    };
+
+    let Some(backend_pid) = running.backend_pid else {
+        // The worker is still acquiring its connection. `run_query` checks the
+        // flag before executing any user SQL.
+        return Ok(true);
+    };
+
+    // Use a short-lived control connection so cancellation still works when
+    // every pooled connection is occupied by a long-running query.
+    let options = options_for(&state, &conn_id).await?;
+    let mut control = PgConnection::connect_with(&options)
+        .await
+        .map_err(|e| e.to_string())?;
+    let cancelled: bool = (&mut control)
+        .fetch_one(sqlx::query("SELECT pg_cancel_backend($1)").bind(backend_pid))
+        .await
+        .map_err(|e| e.to_string())?
+        .get(0);
+    // Cancellation has already been delivered; failure to gracefully close
+    // this short-lived control connection must not make the UI treat Stop as
+    // unsuccessful and surface the worker's cancellation as an error.
+    let _ = control.close().await;
+    Ok(cancelled)
 }
 
 #[tauri::command]

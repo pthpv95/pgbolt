@@ -413,7 +413,9 @@ button {
   padding: 5px 14px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  min-width: 86px;
 }
 .run-btn:hover {
   filter: brightness(1.1);
@@ -421,6 +423,10 @@ button {
 .run-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.run-btn.stop {
+  background: var(--red);
+  color: #1b0707;
 }
 .run-hint {
   color: var(--text-faint);
@@ -446,6 +452,15 @@ button {
 .latency .rows {
   color: var(--green);
   font-variant-numeric: tabular-nums;
+}
+.latency .limit-badge {
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 .latency.running .ms {
   animation: pulse 0.8s ease-in-out infinite;

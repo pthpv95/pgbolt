@@ -23,6 +23,7 @@ export interface QueryResult {
   rows: Record<string, unknown>[];
   rows_affected: number;
   duration_ms: number;
+  truncated: boolean;
 }
 
 export interface TableInfo {
@@ -76,6 +77,8 @@ export interface QueryTab {
   result: QueryResult | null;
   error: string | null;
   running: boolean;
+  cancelling: boolean;
+  queryId: string | null;
   tableRef: { schema: string; table: string } | null;
   /** null = not fetched yet, [] = no primary key (read-only) */
   pkColumns: string[] | null;

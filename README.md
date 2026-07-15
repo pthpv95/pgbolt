@@ -21,8 +21,12 @@ execution; the webview is only the UI.
 - Multiple query tabs per connection — click a table to open it (or focus
   its existing tab) without losing other open tabs; `+` or **⌘T** for a
   blank query tab
-- SQL editor (CodeMirror, Postgres syntax) with **⌘↵ to run**
+- SQL editor (CodeMirror, Postgres syntax) with **⌘↵ to run** the selection (or
+  the full editor when nothing is selected), plus a Stop button for cancelling
+  an active PostgreSQL query
 - Row-returning queries render in the virtualized grid; DML/DDL report rows-affected
+- Ad-hoc results are capped at 5,000 rows with visible truncation feedback, so
+  an accidental unbounded query cannot fill application memory
 - Click a row number to open a row detail panel — full untruncated values,
   prev/next navigation, and (when editable) multi-line editing and delete
 - Right-click a cell to filter the grid to matching (or non-matching) values;
@@ -107,7 +111,8 @@ src-tauri/src/
   `pool.describe()`.
 - A `SELECT` returning **zero rows** shows no columns (columns are read off the
   first row here). Use `describe()` to get column metadata without data.
-- Grid columns are fixed-width, no cell copy menu, no CSV export yet.
+- Grid columns are resizable and cells have a copy menu; no CSV export or
+  horizontal column virtualization yet.
 - Inline editing writes the new value as text, cast with `::<column type>` —
   this covers scalars, uuid/json/timestamp/numeric/bytea cleanly, but Postgres
   **array columns need array-literal syntax** (`{a,b}`, not `["a","b"]`) since
@@ -128,5 +133,5 @@ src-tauri/src/
 1. **Keychain-backed credentials.**
 2. **SSH tunneling** (you already do this for RDS) — spawn the tunnel from Rust or
    integrate `russh` so connections can hop through a bastion.
-3. Column resize + horizontal virtualization for very wide tables.
+3. Horizontal virtualization for very wide tables.
 4. Query history, and persisting open tabs across restarts.
