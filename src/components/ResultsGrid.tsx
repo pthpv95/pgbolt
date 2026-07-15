@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ColumnInfo, FilterCondition, FilterOp, QueryResult } from "../types";
 import { renderValue } from "../lib/format";
@@ -34,6 +34,8 @@ const VALUELESS = (op: FilterOp) => op === "is null" || op === "is not null";
 
 const ROW_H = 26;
 const COL_W = 180;
+const MIN_COL_W = 80;
+const MAX_COL_W = 800;
 const GUTTER_W = 56;
 
 function truncate(s: string, n = 40) {
@@ -74,6 +76,14 @@ export function ResultsGrid({
     null
   );
   const [sort, setSort] = useState<{ column: string; dir: SortDir } | null>(null);
+  const columnSignature = JSON.stringify(
+    result?.columns.map((column) => [column.name, column.data_type]) ?? []
+  );
+  const [columnSizing, setColumnSizing] = useState<{
+    signature: string;
+    widths: Record<string, number>;
+  }>({ signature: "", widths: {} });
+  const columnWidths = columnSizing.signature === columnSignature ? columnSizing.widths : {};
   // Per-column header filter inputs. Kept in sync with the applied `filters`
   // (below) so removing a chip elsewhere also clears the matching header input.
   const [draftOp, setDraftOp] = useState<Record<string, FilterOp>>({});
@@ -135,6 +145,58 @@ export function ResultsGrid({
       if (!prev || prev.column !== column) return { column, dir: "asc" };
       if (prev.dir === "asc") return { column, dir: "desc" };
       return null;
+    });
+  }
+
+  function startColumnResize(e: ReactMouseEvent, column: string) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const cell = e.currentTarget.parentElement;
+    if (!cell) return;
+    const startX = e.clientX;
+    const startWidth = columnWidths[column] ?? COL_W;
+    const scale = cell.getBoundingClientRect().width / cell.offsetWidth || 1;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    function onMove(ev: MouseEvent) {
+      const next = Math.max(
+        MIN_COL_W,
+        Math.min(MAX_COL_W, startWidth + (ev.clientX - startX) / scale)
+      );
+      setColumnSizing((current) => ({
+        signature: columnSignature,
+        widths: {
+          ...(current.signature === columnSignature ? current.widths : {}),
+          [column]: next,
+        },
+      }));
+    }
+
+    function stopResize() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", stopResize);
+      window.removeEventListener("blur", stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", stopResize);
+    window.addEventListener("blur", stopResize);
+  }
+
+  function resetColumnWidth(e: ReactMouseEvent, column: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    setColumnSizing((current) => {
+      if (current.signature !== columnSignature) return current;
+      const widths = { ...current.widths };
+      delete widths[column];
+      return { signature: columnSignature, widths };
     });
   }
 
@@ -210,8 +272,11 @@ export function ResultsGrid({
     );
   }
 
-  const gridWidth = GUTTER_W + result.columns.length * COL_W;
   const columns: ColumnInfo[] = result.columns;
+  const gridWidth = GUTTER_W + columns.reduce(
+    (total, column) => total + (columnWidths[column.name] ?? COL_W),
+    0
+  );
 
   return (
     <div className="results" ref={parentRef}>
@@ -223,8 +288,9 @@ export function ResultsGrid({
           {columns.map((c) => {
             const op = draftOp[c.name] ?? "=";
             const active = filters.some((f) => f.column === c.name);
+            const width = columnWidths[c.name] ?? COL_W;
             return (
-              <div key={c.name} className="cell" style={{ width: COL_W, minWidth: COL_W }}>
+              <div key={c.name} className="cell" style={{ width, minWidth: width }}>
                 <div className="col-head sortable" title={`${c.name} — sort`} onClick={() => toggleSort(c.name)}>
                   <span className="col-name">
                     <span className="col-name-text">{c.name}</span>
@@ -268,6 +334,12 @@ export function ResultsGrid({
                     />
                   </div>
                 )}
+                <div
+                  className="column-resize"
+                  title="Drag to resize column; double-click to reset"
+                  onMouseDown={(e) => startColumnResize(e, c.name)}
+                  onDoubleClick={(e) => resetColumnWidth(e, c.name)}
+                />
               </div>
             );
           })}
@@ -305,13 +377,14 @@ export function ResultsGrid({
                 {columns.map((c) => {
                   const isEditing = editingCell?.row === dataIndex && editingCell.col === c.name;
                   const { text, isNull } = renderValue(row[c.name]);
+                  const width = columnWidths[c.name] ?? COL_W;
 
                   if (isEditing) {
                     return (
                       <div
                         key={c.name}
                         className="cell editing"
-                        style={{ width: COL_W, minWidth: COL_W }}
+                        style={{ width, minWidth: width }}
                       >
                         <input
                           autoFocus
@@ -345,7 +418,7 @@ export function ResultsGrid({
                     <div
                       key={c.name}
                       className={`cell ${isNull ? "null" : ""} ${editable ? "editable" : ""}`}
-                      style={{ width: COL_W, minWidth: COL_W }}
+                      style={{ width, minWidth: width }}
                       title={text}
                       onDoubleClick={() => startEdit(dataIndex, c.name, row[c.name])}
                       onContextMenu={(e) => {

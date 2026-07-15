@@ -69,7 +69,7 @@ button {
 
 .body {
   display: grid;
-  grid-template-columns: 250px 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
@@ -117,7 +117,21 @@ button {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  min-width: 0;
+  position: relative;
+}
+
+.sidebar-resize {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+.sidebar-resize:hover {
+  background: var(--accent-dim);
 }
 
 .sidebar-section {
@@ -133,6 +147,7 @@ button {
 
 .sidebar-scroll {
   overflow-y: auto;
+  overflow-x: hidden;
   flex: 1;
 }
 
@@ -264,6 +279,7 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
 
 /* ---------- Tab bar ---------- */
@@ -488,6 +504,19 @@ button {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  position: relative;
+}
+.column-resize {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+.column-resize:hover {
+  background: var(--accent-dim);
 }
 .grid-head .col-head {
   display: flex;

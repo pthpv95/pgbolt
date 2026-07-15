@@ -102,6 +102,19 @@ fn cast_type(data_type: &str) -> Result<String, String> {
     Ok(if is_array { format!("{base}[]") } else { base })
 }
 
+/// Postgres's extended query protocol only permits one command per prepared
+/// statement. Keep that fast path for normal queries, but recognize the
+/// server error so editor scripts can be retried through the simple protocol.
+fn is_multiple_statements_error(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database_error)
+            if database_error
+                .message()
+                .contains("cannot insert multiple commands into a prepared statement")
+    )
+}
+
 async fn pool_for(state: &State<'_, AppState>, conn_id: &str) -> Result<PgPool, String> {
     state
         .connections
@@ -172,10 +185,14 @@ pub async fn run_query(
         .any(|k| head.starts_with(k));
 
     if returns_rows {
-        let rows = sqlx::query(&sql)
-            .fetch_all(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let rows = match sqlx::query(&sql).fetch_all(&pool).await {
+            Ok(rows) => rows,
+            Err(error) if is_multiple_statements_error(&error) => sqlx::raw_sql(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| e.to_string())?,
+            Err(error) => return Err(error.to_string()),
+        };
 
         let columns = rows
             .first()
@@ -197,10 +214,14 @@ pub async fn run_query(
             duration_ms: start.elapsed().as_millis(),
         })
     } else {
-        let res = sqlx::query(&sql)
-            .execute(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let res = match sqlx::query(&sql).execute(&pool).await {
+            Ok(result) => result,
+            Err(error) if is_multiple_statements_error(&error) => sqlx::raw_sql(&sql)
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?,
+            Err(error) => return Err(error.to_string()),
+        };
         Ok(QueryResult {
             columns: vec![],
             rows: vec![],

@@ -1,6 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { SavedConnection, TableInfo, TableRef } from "../types";
 import { api } from "../api";
+
+const SIDEBAR_WIDTH_KEY = "pgbolt.sidebarWidth";
+const DEFAULT_SIDEBAR_WIDTH = 250;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 500;
+
+function loadSidebarWidth() {
+  const stored = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+  if (stored === null) return DEFAULT_SIDEBAR_WIDTH;
+  const saved = Number(stored);
+  if (!Number.isFinite(saved)) return DEFAULT_SIDEBAR_WIDTH;
+  return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, saved));
+}
 
 interface Props {
   connections: SavedConnection[];
@@ -23,11 +36,17 @@ export function Sidebar({
   onToggleFavorite,
   onPickTable,
 }: Props) {
+  const sidebarRef = useRef<HTMLElement>(null);
+  const [width, setWidth] = useState(loadSidebarWidth);
   const [schemas, setSchemas] = useState<string[]>([]);
   const [open, setOpen] = useState<Record<string, TableInfo[] | undefined>>({});
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<TableRef[]>([]);
   const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
+  }, [width]);
 
   useEffect(() => {
     setSchemas([]);
@@ -85,8 +104,40 @@ export function Sidebar({
     (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0)
   );
 
+  function startResize(e: ReactMouseEvent) {
+    if (e.button !== 0 || !sidebarRef.current) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+    // Mouse coordinates are viewport pixels, while width is a layout value.
+    // Account for the app's WebKit zoom when translating the drag distance.
+    const rect = sidebarRef.current.getBoundingClientRect();
+    const scale = rect.width / sidebarRef.current.offsetWidth || 1;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    function onMove(ev: MouseEvent) {
+      const next = startWidth + (ev.clientX - startX) / scale;
+      setWidth(Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, next)));
+    }
+
+    function stopResize() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", stopResize);
+      window.removeEventListener("blur", stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", stopResize);
+    window.addEventListener("blur", stopResize);
+  }
+
   return (
-    <aside className="sidebar">
+    <aside ref={sidebarRef} className="sidebar" style={{ width }}>
       <div className="sidebar-section">
         <span>Connections</span>
         <button className="icon-btn" title="New connection" onClick={onAdd}>
@@ -193,6 +244,12 @@ export function Sidebar({
           )
         )}
       </div>
+      <div
+        className="sidebar-resize"
+        title="Drag to resize sidebar"
+        onMouseDown={startResize}
+        onDoubleClick={() => setWidth(DEFAULT_SIDEBAR_WIDTH)}
+      />
     </aside>
   );
 }

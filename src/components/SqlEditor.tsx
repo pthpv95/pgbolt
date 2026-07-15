@@ -17,7 +17,18 @@ interface Props {
 // Minimal dark theme so CodeMirror matches the app shell.
 const theme = EditorView.theme(
   {
-    "&": { backgroundColor: "transparent", color: "#e4e9f0" },
+    "&": {
+      backgroundColor: "transparent",
+      color: "#e4e9f0",
+      // The app shell disables selection globally. Override it at the editor
+      // boundary so WebKit allows normal click-drag selection for copying.
+      userSelect: "text",
+      WebkitUserSelect: "text",
+    },
+    ".cm-scroller, .cm-content": {
+      userSelect: "text",
+      WebkitUserSelect: "text",
+    },
     ".cm-content": { caretColor: "#3b9dff" },
     ".cm-gutters": {
       backgroundColor: "#12161c",
@@ -27,7 +38,7 @@ const theme = EditorView.theme(
     ".cm-activeLine": { backgroundColor: "#151a2140" },
     ".cm-activeLineGutter": { backgroundColor: "#151a21" },
     "&.cm-focused": { outline: "none" },
-    ".cm-selectionBackground, ::selection": { backgroundColor: "#1f4f7a80" },
+    ".cm-selectionBackground, ::selection": { backgroundColor: "#2d78b899" },
   },
   { dark: true }
 );
