@@ -14,38 +14,68 @@ execution; the webview is only the UI.
 - **Tauri, not Electron** — no bundled Chromium, ~10 MB binary vs ~150 MB, and the
   hot path (connect, decode rows, stream to grid) runs in Rust, not JS. This is
   where "lightning fast" comes from.
-- **sqlx** for async Postgres with a real connection pool per connection.
-- **@tanstack/react-virtual** so a 100k-row result set renders only the visible
-  rows — scrolling stays smooth regardless of result size.
+- **sqlx** for async Postgres, multi-statement execution, and a real connection
+  pool per saved connection.
+- **@tanstack/react-virtual** so the grid mounts only visible rows. Ad-hoc results
+  are capped at 5,000 rows before they reach the UI.
 
 ## What works today
 
-- Add / save connections (persisted locally), test on connect
-- Schema + table tree in the sidebar (schemas expand by default), plus a
-  search box to find a table by name across all schemas
-- Multiple query tabs per connection — click a table to open it (or focus
-  its existing tab) without losing other open tabs; `+` or **⌘T** for a
-  blank query tab
-- SQL editor (CodeMirror, Postgres syntax) with **⌘↵ to run** the selection (or
-  the full editor when nothing is selected), plus a Stop button for cancelling
-  an active PostgreSQL query
-- Row-returning queries render in the virtualized grid; DML/DDL report rows-affected
-- Ad-hoc results are capped at 5,000 rows with visible truncation feedback, so
-  an accidental unbounded query cannot fill application memory
-- Click a row number to open a row detail panel — full untruncated values,
-  prev/next navigation, and (when editable) multi-line editing and delete
-- Right-click a cell to filter the grid to matching (or non-matching) values;
-  active filters show as removable chips above the grid
-- Inline cell editing (double-click a cell) and row deletion, for any result
-  whose source table has a primary key — the grid detects the table either
-  because you opened it from the sidebar or because the SQL looks like a
-  plain `SELECT … FROM schema.table …`. Tables without a primary key, or
-  queries with joins/aggregation, stay read-only.
-- **⌘+**/**⌘-**/**⌘0** to zoom the UI in/out/reset
-- Per-query latency + row count readout
-- Common Postgres types decoded to JSON (int/float/bool/text/uuid/json/jsonb/
-  timestamp(tz)/date/time/numeric/bytea/text+int arrays), unknown types fall back
-  to text
+### Connections and navigation
+
+- Add, edit, delete, favorite, and locally persist connections; credentials are
+  tested before a connection becomes active.
+- Browse schemas, tables, and views in a resizable sidebar. Schemas expand by
+  default, and backend table search works across schemas.
+- Use the **⌘K** command palette to find tables, switch connections, and run
+  common actions.
+- Window size and position, UI zoom, sidebar width, and editor height persist
+  between launches.
+
+### Query workflow
+
+- Multiple query tabs are scoped per connection. Tabs support new/close
+  shortcuts and right-click actions for closing other, left, or right tabs.
+- The CodeMirror SQL editor has PostgreSQL syntax highlighting, schema-aware
+  autocomplete, a high-contrast theme, selectable text, and a resizable height.
+- **⌘↵** executes selected SQL when text is selected, or the full editor when it
+  is not. The Run button always executes the full editor.
+- Single statements and multi-statement scripts such as explicit
+  `BEGIN; … COMMIT;` transactions are supported.
+- A running query can be stopped. Cancellation targets the exact PostgreSQL
+  backend process instead of merely dismissing the UI request.
+
+### Results and table editing
+
+- Row-returning queries render in a virtualized grid; DML/DDL report the total
+  affected-row count. Latency and row counts remain visible in the editor bar.
+- Ad-hoc results stop at 5,000 rows and display `5000+` with a `limited` badge,
+  preventing accidental unbounded results from filling application memory.
+- Columns support client-side sorting over loaded rows, drag resizing, and
+  double-click reset. The grid scrolls horizontally for wide results.
+- Filter from a column header, the searchable **+ Filter** control, or a cell's
+  right-click menu. Active filters appear as removable chips and run server-side.
+- Right-click a cell to copy its full rendered value or create an equality,
+  inequality, or null filter.
+- Click a row number to open a searchable row-detail panel with full values,
+  previous/next navigation, editing, and deletion.
+- Inline cell editing and row deletion are enabled for plain single-table
+  results with a primary key. Joins, aggregates, and tables without a primary
+  key remain read-only.
+- Common PostgreSQL types decode to JSON, including numeric scalars, UUID,
+  JSON/JSONB, date/time types, bytea, enums, and one-dimensional arrays.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| **⌘K** | Open the command palette |
+| **⌘T** | Open a new query tab |
+| **⌘W** | Close the active query tab |
+| **⌘↵** | Run selected SQL, or the full editor when nothing is selected |
+| **⌘R** | Re-run the active query |
+| **⌘F** | Open the searchable filter control for a table result |
+| **⌘+** / **⌘-** / **⌘0** | Zoom in, zoom out, or reset zoom |
 
 ## Run it
 
@@ -55,6 +85,20 @@ Prereqs on macOS: **Rust** (`rustup`), **Node 18+**, and Xcode command line tool
 ```bash
 npm install
 npm run tauri dev        # first Rust build takes a few minutes
+```
+
+If `cargo` is not on the non-interactive shell path:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Useful development checks:
+
+```bash
+npx tsc --noEmit         # frontend typecheck
+npm run build            # typecheck + production frontend bundle
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 Release build:
@@ -98,10 +142,13 @@ notarization — out of scope here.
 
 ```
 src/                     React UI
-  api.ts                 typed invoke() wrappers
-  components/            Sidebar, SqlEditor, ResultsGrid, ConnectionManager
+  App.tsx                connection/tab/query/filter state + global shortcuts
+  api.ts                 typed Tauri invoke() wrappers
+  types.ts               TypeScript mirrors of Rust response structs
+  components/            editor, grid, sidebar, tabs, command palette, modals
 src-tauri/src/
-  db.rs                  connection registry + commands (connect/run_query/introspection)
+  db.rs                  pools, bounded queries, cancellation, introspection,
+                         row updates/deletes
   convert.rs             PgRow -> serde_json::Value (the dynamic-type decoder)
   lib.rs                 command registration
 ```
@@ -116,8 +163,10 @@ src-tauri/src/
   `pool.describe()`.
 - A `SELECT` returning **zero rows** shows no columns (columns are read off the
   first row here). Use `describe()` to get column metadata without data.
-- Grid columns are resizable and cells have a copy menu; no CSV export or
-  horizontal column virtualization yet.
+- Multi-statement scripts execute, but the UI does not present independent
+  result tabs for each statement.
+- The 5,000-row safety limit is currently fixed rather than configurable.
+- No CSV export or horizontal column virtualization yet.
 - Inline editing writes the new value as text, cast with `::<column type>` —
   this covers scalars, uuid/json/timestamp/numeric/bytea cleanly, but Postgres
   **array columns need array-literal syntax** (`{a,b}`, not `["a","b"]`) since
@@ -135,8 +184,11 @@ src-tauri/src/
 
 ## Natural next steps
 
-1. **Keychain-backed credentials.**
-2. **SSH tunneling** (you already do this for RDS) — spawn the tunnel from Rust or
-   integrate `russh` so connections can hop through a bastion.
-3. Horizontal virtualization for very wide tables.
-4. Query history, and persisting open tabs across restarts.
+1. Use `describe()` for reliable row/command classification and zero-row column
+   metadata.
+2. Move credentials from `localStorage` to the macOS Keychain.
+3. Replace eager per-schema table loading with one bounded introspection query
+   or lazy expansion.
+4. Add query history and persist open tabs across restarts.
+5. Add CSV export and horizontal column virtualization for very wide tables.
+6. Add SSH tunneling for databases reached through a bastion.
